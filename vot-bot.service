@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/video-translator
+# venv/bin в PATH: иначе бот не находит yt-dlp, он ставится только внутрь venv
+Environment=PATH=/opt/video-translator/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/opt/video-translator/venv/bin/python /opt/video-translator/bot.py
 Restart=always
 RestartSec=10

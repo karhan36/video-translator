@@ -63,6 +63,29 @@ say "Собираю venv и ставлю зависимости"
 "$APP_DIR/venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 
+# yt-dlp живёт внутри venv — кладём ссылку в системный каталог, иначе бот его не найдёт
+ln -sf "$APP_DIR/venv/bin/yt-dlp" /usr/local/bin/yt-dlp
+"$APP_DIR/venv/bin/yt-dlp" --version >/dev/null || die "yt-dlp не установился."
+
+# ── 3b. JavaScript-движок для yt-dlp ────────────────────────────────────────
+# YouTube отдаёт ссылки на потоки только после выполнения куска JS.
+# Без движка извлечение объявлено устаревшим и часть форматов пропадает.
+# Deno у yt-dlp включён по умолчанию — достаточно положить его в PATH.
+if command -v deno >/dev/null 2>&1; then
+  say "Deno уже стоит: $(deno --version | head -1)"
+else
+  say "Ставлю Deno"
+  apt-get install -y -qq unzip >/dev/null
+  DENO_TMP="$(mktemp -d)"
+  curl -fsSL -o "$DENO_TMP/deno.zip" \
+    https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip
+  unzip -o -q "$DENO_TMP/deno.zip" -d /usr/local/bin
+  chmod +x /usr/local/bin/deno
+  rm -rf "$DENO_TMP"
+  command -v deno >/dev/null || die "Deno не установился."
+  say "Deno: $(deno --version | head -1)"
+fi
+
 # ── 4. Локальный Bot API server ─────────────────────────────────────────────
 set +u
 source <(grep -E '^(TELEGRAM_API_ID|TELEGRAM_API_HASH)=' "$APP_DIR/.env" || true)
