@@ -56,6 +56,7 @@ class Job:
     dir: Path = field(default_factory=Path)
     result: speechkit.Result | None = None
     audio_only: bool = False
+    local_video: Path | None = None  # видео, присланное файлом: качать неоткуда
     mp3: Path | None = None
     mp4: Path | None = None
     srt: Path | None = None
@@ -159,7 +160,8 @@ async def cmd_start(message: Message) -> None:
     await message.answer(
         "Пришли ссылку на ролик — переведу речь на русский, озвучу и уложу "
         "по таймкодам оригинала.\n\n"
-        "Можно прислать и аудиофайл: mp3, голосовое или аудио-документ.\n\n"
+        "Можно прислать файлом: видео (mp4, mkv, mov, webm), аудио, голосовое. "
+        "Для видео дорожка перевода ляжет поверх оригинала.\n\n"
         f"Лимит длины: {config.MAX_DURATION_MIN} мин. Один ролик в работе за раз."
     )
 
@@ -179,31 +181,49 @@ async def cmd_status(message: Message) -> None:
 # ── Приём работы ────────────────────────────────────────────────────────────
 
 
-@dp.message(F.audio | F.voice | F.document)
-async def on_audio(message: Message) -> None:
+@dp.message(F.audio | F.voice | F.video | F.video_note | F.document)
+async def on_media(message: Message) -> None:
+    """Приём файлов: аудио и видео. Для видео дорожка перевода кладётся поверх него."""
     if not allowed(message.from_user.id if message.from_user else None):
         return
 
-    file_obj = message.audio or message.voice or message.document
-    if message.document and not (message.document.mime_type or "").startswith("audio"):
-        await message.answer("Это не аудиофайл. Пришли mp3, голосовое или ссылку на ролик.")
-        return
+    file_obj = (
+        message.audio or message.voice or message.video or message.video_note or message.document
+    )
+    is_video = bool(message.video or message.video_note)
+
+    if message.document:
+        mime = (message.document.mime_type or "").lower()
+        name = (message.document.file_name or "").lower()
+        if mime.startswith("video") or name.endswith((".mp4", ".mkv", ".mov", ".webm", ".avi")):
+            is_video = True
+        elif not mime.startswith("audio"):
+            await message.answer(
+                "Не понял формат. Пришли видео, аудио, голосовое или ссылку на ролик."
+            )
+            return
 
     if job_lock.locked():
         await message.answer("Сейчас в работе другой ролик. Дождись, пожалуйста.")
         return
 
     async with job_lock:
-        job = Job(job_id=uuid.uuid4().hex[:10], chat_id=message.chat.id, audio_only=True)
+        job = Job(
+            job_id=uuid.uuid4().hex[:10], chat_id=message.chat.id, audio_only=not is_video
+        )
         job.dir = config.WORK_DIR / job.job_id
         job.dir.mkdir(parents=True, exist_ok=True)
-        job.title = getattr(file_obj, "file_name", None) or "Аудиозапись"
+        job.title = getattr(file_obj, "file_name", None) or (
+            "Видеозапись" if is_video else "Аудиозапись"
+        )
 
         status = await message.answer("Скачиваю файл…")
         report = Reporter(status)
         try:
-            src = job.dir / "source_input"
+            src = job.dir / ("source_video.mp4" if is_video else "source_input")
             await message.bot.download(file_obj, destination=src)
+            if is_video:
+                job.local_video = src
             probe = await media.probe(src)
             if probe.duration > config.MAX_DURATION_MIN * 60:
                 await status.edit_text(
@@ -341,13 +361,21 @@ async def send_text(message: Message, job: Job) -> None:
 
 async def send_video(message: Message, job: Job) -> None:
     assert job.result is not None
-    if job.audio_only or not job.source_url:
+    if job.audio_only:
         await message.answer("Для аудиофайла видео нет.")
         return
 
     if not job.mp4 or not job.mp4.exists():
-        note = await message.answer("Качаю видео и накладываю дорожку. Это дольше всего…")
-        video = await media.download_video(job.source_url, job.dir)
+        if job.local_video and job.local_video.exists():
+            # видео прислали файлом — качать нечего, сразу накладываем дорожку
+            note = await message.answer("Накладываю дорожку на видео…")
+            video = job.local_video
+        elif job.source_url:
+            note = await message.answer("Качаю видео и накладываю дорожку. Это дольше всего…")
+            video = await media.download_video(job.source_url, job.dir)
+        else:
+            await message.answer("Исходного видео нет.")
+            return
         job.mp4 = await media.mix_video(video, job.result.wav_path, job.dir / "dubbed.mp4")
         with contextlib.suppress(Exception):
             await note.delete()
