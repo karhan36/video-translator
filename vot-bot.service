@@ -1,0 +1,17 @@
+[Unit]
+Description=Video translator telegram bot (Yandex SpeechKit)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/video-translator
+ExecStart=/opt/video-translator/venv/bin/python /opt/video-translator/bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vot-bot
+
+[Install]
+WantedBy=multi-user.target
