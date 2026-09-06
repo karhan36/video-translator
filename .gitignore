@@ -1,0 +1,30 @@
+# Секреты — никогда в репозиторий
+.env
+.env.*
+!.env.example
+cookies.txt
+*.cookies
+*.pem
+*.key
+
+# Рабочие файлы бота
+work/
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.ogg
+*.opus
+*.srt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Логи и мусор ОС
+*.log
+.DS_Store
+Thumbs.db
