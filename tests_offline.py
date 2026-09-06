@@ -338,6 +338,41 @@ def test_nice_title() -> None:
     )
 
 
+# ── 9. Перебор клиентов yt-dlp ──────────────────────────────────────────────
+
+
+def test_ytdlp_retry() -> None:
+    import media
+
+    retryable = [
+        "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies",
+        "ERROR: [youtube] abc: The page needs to be reloaded.",
+        "ERROR: [youtube] abc: Requested format is not available.",
+        "ERROR: unable to download webpage: HTTP Error 429: Too Many Requests",
+        "ERROR: [youtube] abc: Failed to extract any player response",
+    ]
+    for text in retryable:
+        check(f"повтор нужен: {text[:40]}", media.is_retryable_error(text))
+
+    final = [
+        "ERROR: [youtube] abc: Video unavailable. This video is private",
+        "ERROR: [generic] Unsupported URL: file:///etc/passwd",
+        "ERROR: unable to open for writing: No space left on device",
+    ]
+    for text in final:
+        check(f"повтор бесполезен: {text[:40]}", not media.is_retryable_error(text))
+
+    check("наборов клиентов больше одного", len(media.YTDLP_CLIENTS) >= 2)
+    check(
+        "первый набор — рабочий на этом сервере",
+        media.YTDLP_CLIENTS[0] == "default,android_vr",
+    )
+    check(
+        "клиент подставляется в extractor-args",
+        "youtube:player_client=android_vr" in media._ytdlp_base("android_vr"),
+    )
+
+
 if __name__ == "__main__":
     test_phrases()
     test_batching()
@@ -352,6 +387,7 @@ if __name__ == "__main__":
     test_editor_parse()
     test_safe_name()
     test_nice_title()
+    test_ytdlp_retry()
 
     print()
     if FAILED:

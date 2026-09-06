@@ -84,7 +84,31 @@ async def probe(path: Path) -> Probe:
 # ── yt-dlp ──────────────────────────────────────────────────────────────────
 
 
-def _ytdlp_base() -> list[str]:
+# Наборы клиентов плеера, по которым идёт перебор при отказе YouTube.
+# Проверено 6 сентября 2026 на Timeweb ams-1: default решает JS-челлендж через
+# Deno, android_vr работает без него. Проверка «вы не робот» у YouTube плавающая:
+# один и тот же ролик минуту назад открывался, а сейчас требует подтверждения,
+# поэтому важен не «правильный» клиент, а повтор другим набором.
+YTDLP_CLIENTS = (
+    "default,android_vr",
+    "android_vr",
+    "default",
+    "tv,web_safari",
+)
+
+# Признаки того, что отказ временный и стоит повторить другим клиентом.
+_RETRYABLE = (
+    "sign in to confirm",
+    "not a bot",
+    "page needs to be reloaded",
+    "requested format is not available",
+    "http error 429",
+    "unable to extract",
+    "failed to extract any player response",
+)
+
+
+def _ytdlp_base(clients: str = YTDLP_CLIENTS[0]) -> list[str]:
     cmd = [
         "yt-dlp",
         "--no-playlist",
@@ -95,12 +119,8 @@ def _ytdlp_base() -> list[str]:
         "10",
         "--socket-timeout",
         "30",
-        # обходы блокировок YouTube: клиенты плеера, которые реально отдают
-        # форматы с IP дата-центра (проверено 6 сентября 2026 на Timeweb ams-1).
-        # tv/ios/web там ловят «The page needs to be reloaded» и «format is not
-        # available»; default решает JS-челлендж через Deno, android_vr — запасной.
         "--extractor-args",
-        "youtube:player_client=default,android_vr",
+        f"youtube:player_client={clients}",
     ]
     if config.YTDLP_COOKIES:
         cmd += ["--cookies", config.YTDLP_COOKIES]
@@ -109,15 +129,46 @@ def _ytdlp_base() -> list[str]:
     return cmd
 
 
+def is_retryable_error(stderr: str) -> bool:
+    """Отказ YouTube, который лечится повтором с другим клиентом плеера."""
+    low = stderr.lower()
+    return any(mark in low for mark in _RETRYABLE)
+
+
+async def _run_ytdlp(
+    args: list[str], url: str, timeout: int, pause: float = 3.0
+) -> tuple[bytes, bytes]:
+    """Запускает yt-dlp, перебирая клиентов плеера, пока YouTube не отдаст ролик.
+
+    Возвращает stdout и stderr удачной попытки. Если все наборы упали,
+    поднимает MediaError с текстом последней ошибки.
+    """
+    _check_tools()
+    last_err = b""
+    for attempt, clients in enumerate(YTDLP_CLIENTS):
+        code, out, err = await _run(_ytdlp_base(clients) + args + [url], timeout=timeout)
+        if code == 0:
+            if attempt:
+                log.info("yt-dlp: сработал клиент %s с попытки %d", clients, attempt + 1)
+            return out, err
+        last_err = err
+        text = err.decode(errors="replace")
+        if not is_retryable_error(text):
+            break
+        log.warning("yt-dlp: клиент %s отказал, пробую следующий", clients)
+        if pause:
+            await asyncio.sleep(pause)
+    raise MediaError(last_err.decode(errors="replace")[-400:] or "yt-dlp не дал ответа.")
+
+
 async def fetch_info(url: str) -> dict:
     """Метаданные ролика без скачивания."""
-    _check_tools()
-    code, out, err = await _run(_ytdlp_base() + ["--dump-single-json", url], timeout=180)
-    if code != 0:
+    try:
+        out, _ = await _run_ytdlp(["--dump-single-json"], url, timeout=180)
+    except MediaError as exc:
         raise MediaError(
-            "yt-dlp не смог открыть ссылку. Проверь, что ролик доступен.\n"
-            + err.decode(errors="replace")[-400:]
-        )
+            "yt-dlp не смог открыть ссылку. Проверь, что ролик доступен.\n" + str(exc)
+        ) from exc
     return json.loads(out or b"{}")
 
 
@@ -200,17 +251,15 @@ async def file_tags(path: Path) -> dict:
 
 async def download_audio(url: str, out_dir: Path) -> Path:
     """Скачивает только звуковую дорожку."""
-    _check_tools()
     target = out_dir / "source_audio.%(ext)s"
-    code, _, err = await _run(
-        _ytdlp_base()
-        + ["-f", "bestaudio/best", "--no-part", "-o", str(target), url],
-        timeout=7200,
-    )
-    if code != 0:
-        raise MediaError(
-            "Не получилось скачать аудио.\n" + err.decode(errors="replace")[-400:]
+    try:
+        await _run_ytdlp(
+            ["-f", "bestaudio/best", "--no-part", "-o", str(target)],
+            url,
+            timeout=7200,
         )
+    except MediaError as exc:
+        raise MediaError("Не получилось скачать аудио.\n" + str(exc)) from exc
     files = sorted(out_dir.glob("source_audio.*"))
     if not files:
         raise MediaError("yt-dlp отработал, но файла нет.")
@@ -219,22 +268,20 @@ async def download_audio(url: str, out_dir: Path) -> Path:
 
 async def download_video(url: str, out_dir: Path) -> Path:
     """Скачивает видео не выше VIDEO_HEIGHT."""
-    _check_tools()
     height = config.VIDEO_HEIGHT
     fmt = (
         f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
         f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
     )
     target = out_dir / "source_video.%(ext)s"
-    code, _, err = await _run(
-        _ytdlp_base()
-        + ["-f", fmt, "--merge-output-format", "mp4", "--no-part", "-o", str(target), url],
-        timeout=10800,
-    )
-    if code != 0:
-        raise MediaError(
-            "Не получилось скачать видео.\n" + err.decode(errors="replace")[-400:]
+    try:
+        await _run_ytdlp(
+            ["-f", fmt, "--merge-output-format", "mp4", "--no-part", "-o", str(target)],
+            url,
+            timeout=10800,
         )
+    except MediaError as exc:
+        raise MediaError("Не получилось скачать видео.\n" + str(exc)) from exc
     files = sorted(out_dir.glob("source_video.*"))
     if not files:
         raise MediaError("yt-dlp отработал, но видеофайла нет.")
