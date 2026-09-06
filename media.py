@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import config
 
@@ -92,9 +95,12 @@ def _ytdlp_base() -> list[str]:
         "10",
         "--socket-timeout",
         "30",
-        # обходы блокировок YouTube: пробуем несколько клиентов плеера
+        # обходы блокировок YouTube: клиенты плеера, которые реально отдают
+        # форматы с IP дата-центра (проверено 6 сентября 2026 на Timeweb ams-1).
+        # tv/ios/web там ловят «The page needs to be reloaded» и «format is not
+        # available»; default решает JS-челлендж через Deno, android_vr — запасной.
         "--extractor-args",
-        "youtube:player_client=tv,ios,web",
+        "youtube:player_client=default,android_vr",
     ]
     if config.YTDLP_COOKIES:
         cmd += ["--cookies", config.YTDLP_COOKIES]
@@ -113,6 +119,83 @@ async def fetch_info(url: str) -> dict:
             + err.decode(errors="replace")[-400:]
         )
     return json.loads(out or b"{}")
+
+
+# ── Имя ролика ──────────────────────────────────────────────────────────────
+
+# «Мусорным» считаем имя без пробелов, целиком из hex или из случайной
+# мешанины букв, цифр и разделителей: так выглядит имя файла из прямой ссылки.
+_HEX_RE = re.compile(r"^[0-9a-fA-F]{8,}$")
+_SLUG_RE = re.compile(r"^[0-9A-Za-z_\-]{12,}$")
+
+
+def is_junk_title(title: str) -> bool:
+    """Имя выглядит как хеш или техническая строка, а не как название ролика."""
+    name = (title or "").strip()
+    if not name:
+        return True
+    if name.startswith(("http://", "https://")):
+        return True
+    stem = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name)  # отрезаем расширение
+    if _HEX_RE.match(stem):
+        return True
+    if _SLUG_RE.match(stem) and not re.search(r"[А-Яа-яЁё]", stem):
+        # длинная строка без пробелов: если букв мало или цифр много — хеш
+        digits = sum(c.isdigit() for c in stem)
+        return digits >= 4 or len(stem) >= 20
+    return False
+
+
+def title_from_tags(tags: dict | None) -> str:
+    """Название из тегов самого файла (ID3 и аналоги)."""
+    tags = {str(k).lower(): v for k, v in (tags or {}).items()}
+    title = str(tags.get("title") or "").strip()
+    if not title or is_junk_title(title):
+        return ""
+    artist = str(tags.get("artist") or tags.get("album_artist") or "").strip()
+    return f"{artist} — {title}" if artist and artist.lower() not in title.lower() else title
+
+
+def fallback_title(url: str) -> str:
+    """Запасное имя, когда названия нет нигде: домен и дата."""
+    host = urlparse(url).netloc.replace("www.", "") or "видео"
+    return f"Перевод {host} {datetime.now():%Y-%m-%d}"
+
+
+def nice_title(info: dict, url: str) -> str:
+    """Человекочитаемое название ролика из метаданных yt-dlp.
+
+    Для прямых ссылок yt-dlp подставляет имя файла из адреса — часто хеш.
+    Тогда перебираем другие поля, а в конце отдаём пустую строку: вызывающий
+    код попробует теги скачанного файла и только потом fallback_title.
+    """
+    for key in ("track", "title", "fulltitle", "alt_title"):
+        value = str(info.get(key) or "").strip()
+        if value and not is_junk_title(value):
+            return value
+    return ""
+
+
+async def file_tags(path: Path) -> dict:
+    """Теги медиафайла (format.tags) через ffprobe. Ошибки не роняют задание."""
+    try:
+        code, out, _ = await _run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                str(path),
+            ],
+            timeout=120,
+        )
+        if code != 0:
+            return {}
+        return json.loads(out or b"{}").get("format", {}).get("tags", {}) or {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 async def download_audio(url: str, out_dir: Path) -> Path:

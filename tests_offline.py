@@ -292,6 +292,52 @@ def test_safe_name() -> None:
     check("имя файла: длина ограничена", len(bot.safe_name("я" * 200)) <= 80)
 
 
+# ── 8. Название ролика ──────────────────────────────────────────────────────
+
+
+def test_nice_title() -> None:
+    import media
+
+    junk = [
+        "a3f9c1b2d4e5f607",
+        "5f3a9c1b2d4e.mp4",
+        "1a2b3c4d5e6f7g8h9i0j",
+        "",
+        "https://cdn.example.com/x.mp4",
+    ]
+    for name in junk:
+        check(f"мусорное имя: {name or 'пустое'}", media.is_junk_title(name))
+
+    good = ["How to invest", "Разбор отчёта", "Meb Faber interview", "Bogleheads"]
+    for name in good:
+        check(f"нормальное имя: {name}", not media.is_junk_title(name))
+
+    check(
+        "nice_title берёт title",
+        media.nice_title({"title": "Пассивные инвестиции"}, "https://x.com/a")
+        == "Пассивные инвестиции",
+    )
+    check(
+        "nice_title отбрасывает хеш",
+        media.nice_title({"title": "a3f9c1b2d4e5f607"}, "https://x.com/a") == "",
+    )
+    check(
+        "nice_title подхватывает track",
+        media.nice_title({"title": "9f8e7d6c5b4a3210", "track": "Выпуск 12"}, "u")
+        == "Выпуск 12",
+    )
+    check(
+        "теги файла: артист и название",
+        media.title_from_tags({"TITLE": "Эпизод 3", "artist": "Podcast"})
+        == "Podcast — Эпизод 3",
+    )
+    check("теги файла: хеш отброшен", media.title_from_tags({"title": "deadbeef1234"}) == "")
+    check(
+        "fallback: домен в имени",
+        "example.com" in media.fallback_title("https://www.example.com/a/b.mp4"),
+    )
+
+
 if __name__ == "__main__":
     test_phrases()
     test_batching()
@@ -305,6 +351,7 @@ if __name__ == "__main__":
     test_cost()
     test_editor_parse()
     test_safe_name()
+    test_nice_title()
 
     print()
     if FAILED:

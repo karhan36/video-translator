@@ -268,18 +268,23 @@ async def on_link(message: Message) -> None:
         report = Reporter(status)
         try:
             info = await media.fetch_info(url)
-            job.title = info.get("title") or url
+            job.title = media.nice_title(info, url)
             duration = float(info.get("duration") or 0)
             if duration and duration > config.MAX_DURATION_MIN * 60:
                 await status.edit_text(
-                    f"«{html.escape(job.title)}» идёт {hhmmss(duration)}. "
+                    f"«{html.escape(job.title or url)}» идёт {hhmmss(duration)}. "
                     f"Лимит — {config.MAX_DURATION_MIN} мин."
                 )
                 shutil.rmtree(job.dir, ignore_errors=True)
                 return
 
-            await report(f"Качаю звук: {job.title[:60]}")
+            await report(f"Качаю звук: {(job.title or url)[:60]}")
             audio = await media.download_audio(url, job.dir)
+            if not job.title:
+                # у прямых ссылок yt-dlp отдаёт хеш из адреса: смотрим теги файла
+                job.title = media.title_from_tags(await media.file_tags(audio))
+            if not job.title:
+                job.title = media.fallback_title(url)
             if not duration:
                 duration = (await media.probe(audio)).duration
 
