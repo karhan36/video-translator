@@ -89,7 +89,11 @@ async def probe(path: Path) -> Probe:
 # Deno, android_vr работает без него. Проверка «вы не робот» у YouTube плавающая:
 # один и тот же ролик минуту назад открывался, а сейчас требует подтверждения,
 # поэтому важен не «правильный» клиент, а повтор другим набором.
+# 8 сентября 2026: default и android_vr ловят бот-проверку, поэтому первыми идут
+# mweb и web_embedded. Формат отдают только с пакетом yt-dlp-ejs (решатель n-челленджа).
 YTDLP_CLIENTS = (
+    "mweb,web_embedded",
+    "web_embedded",
     "default,android_vr",
     "android_vr",
     "default",
