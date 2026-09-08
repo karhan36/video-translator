@@ -365,7 +365,7 @@ def test_ytdlp_retry() -> None:
     check("наборов клиентов больше одного", len(media.YTDLP_CLIENTS) >= 2)
     check(
         "первый набор — рабочий на этом сервере",
-        media.YTDLP_CLIENTS[0] == "default,android_vr",
+        media.YTDLP_CLIENTS[0] == "mweb,web_embedded",
     )
     check(
         "клиент подставляется в extractor-args",
